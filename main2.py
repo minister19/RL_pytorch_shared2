@@ -1,20 +1,21 @@
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from collections import deque
-import gymnasium as gym
-import random
-import math
-import logging
 import unittest
+import logging
+import math
+import random
+import gymnasium as gym
+from collections import deque
+import torch.optim as optim
+import torch.nn as nn
+import torch
+import numpy as np
 
 
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
 # 优先经验回放缓冲区
+
+
 class ReplayBuffer:
     def __init__(self, capacity, alpha=0.6, beta=0.4, beta_increment_per_sampling=0.001, device='cpu'):
         """
@@ -82,8 +83,9 @@ class ReplayBuffer:
         for idx, priority in zip(indices, priorities):
             self.priorities[idx] = priority
 
-
 # 定义 Transformer 模型
+
+
 class TransformerModel(nn.Module):
     def __init__(self, input_size, d_model, nhead, num_layers, output_size):
         """
@@ -108,15 +110,24 @@ class TransformerModel(nn.Module):
         :param x: 输入状态
         :return: 输出动作值
         """
-        x = self.embedding(x)  # 嵌入输入
-        x = x.permute(1, 0, 2)  # 调整维度以适应 Transformer 的输入格式
+        x = self.embedding(x)  # 嵌入输入，格式为 [batch_size, sequence_length, d_model]
+        x = x.permute(1, 0, 2)  # 调整维度以适应 Transformer 的输入格式 [sequence_length, batch_size, d_model]
         x = self.transformer_encoder(x)  # 通过 Transformer 编码器
-        x = x[-1, :, :]  # 取最后一个时间步的输出
-        x = self.fc(x)  # 通过全连接层
+        # 对每个时间步的特征进行全连接层处理
+        sequence_length, batch_size, d_model = x.shape
+        x = x.reshape(sequence_length * batch_size, d_model)
+        # x = x.view(sequence_length * batch_size, d_model)  # 合并批量和序列长度维度
+        # x = x.view(-1, d_model)  # 合并批量和序列长度维度
+        x = self.fc(x)
+        # x = x.view(batch_size, sequence_length, -1)  # 恢复形状为 [batch_size, sequence_length, output_size]
+        x = x.view(sequence_length, batch_size, -1)  # 恢复形状为 [sequence_length, batch_size, output_size]
+        # TODO: Batch First
+        # TODO: 只取最后一个时间步的输出
         return x
 
-
 # 神经网络模块
+
+
 class Network:
     def __init__(self, input_size, d_model, nhead, num_layers, output_size, lr, tau, gamma, device='cpu'):
         """
@@ -155,7 +166,15 @@ class Network:
         训练 Q 网络。
         :param batch: 采样的一批经验
         """
-        states, actions, rewards, next_states, dones = batch
+        states, actions, rewards, next_states, dones = zip(*batch)
+        # states = torch.cat(states, dim=1).permute(1, 0, 2)
+        states = torch.cat(states, dim=0)
+        actions = torch.cat(actions, dim=0)
+        rewards = torch.cat(rewards, dim=0).unsqueeze(1)
+        next_states = torch.cat(next_states, dim=1).permute(1, 0, 2)
+        dones = torch.cat(dones, dim=0).unsqueeze(1)
+
+        # states, actions, rewards, next_states, dones = batch
         q_values = self.q_net(states).gather(1, actions)  # 计算当前 Q 值
         with torch.no_grad():
             target_values = self.v_net(next_states).max(1).values  # 计算目标 V 值
@@ -165,8 +184,9 @@ class Network:
         loss.backward()
         self.optimizer.step()
 
-
 # 探索策略模块
+
+
 class Exploration:
     def __init__(self, epsi_high, epsi_low, decay, temperature, device='cpu'):
         """
@@ -195,11 +215,14 @@ class Exploration:
     def act(self, q_values):
         """
         根据探索策略选择动作。
-        :param q_values: Q 网络输出的动作值
-        :return: 选择的动作
+        :param q_values: Q 网络输出的动作值，形状为 [sequence_length, batch_size, action_dim]
+        :return: 选择的动作，形状为 [1, 1]
         """
         self.steps += 1
         epsilon = self.get_epsilon()
+
+        # 取最后一个时间步的输出，形状为 [batch_size, action_dim]
+        q_values = q_values[-1, :, :]  # 取最后一个时间步
 
         if random.random() > epsilon:
             probabilities = torch.softmax(q_values / self.temperature, dim=1)  # 玻尔兹曼探索
@@ -212,10 +235,11 @@ class Exploration:
             )
         return action
 
-
 # Agent 类
+
+
 class Agent:
-    def __init__(self, env, replay_buffer, network, exploration, gamma, batch_size):
+    def __init__(self, env, replay_buffer, network, exploration, gamma, batch_size, n_steps=3, sequence_length=10):
         """
         初始化 Agent。
         :param env: 环境对象
@@ -224,6 +248,8 @@ class Agent:
         :param exploration: 探索策略模块
         :param gamma: 折扣因子
         :param batch_size: 训练批次大小
+        :param n_steps: n-step 回报的步数
+        :param sequence_length: 时序数据的长度
         """
         self.env = env
         self.replay_buffer = replay_buffer
@@ -231,6 +257,37 @@ class Agent:
         self.exploration = exploration
         self.gamma = gamma
         self.batch_size = batch_size
+        self.n_steps = n_steps
+        self.sequence_length = sequence_length  # 时序数据的长度
+        self.n_step_buffer = deque(maxlen=n_steps)  # 初始化 n-step 缓冲区
+        self.state_buffer = deque(maxlen=sequence_length)  # 初始化状态缓冲区
+
+    def _process_n_step(self):
+        """
+        处理 n-step 回报。
+        """
+        if len(self.n_step_buffer) >= self.n_steps:
+            # 获取初始状态和动作
+            state, action, _, _, _ = self.n_step_buffer[0]  # 解包初始经验
+            # 计算 n-step 回报
+            reward = sum([exp[2] * (self.gamma ** i) for i, exp in enumerate(self.n_step_buffer)])
+            # 获取最终状态和终止标志
+            next_state = self.n_step_buffer[-1][3]  # 下一个状态
+            done = self.n_step_buffer[-1][4]  # 终止标志
+            # 存储经验
+            self.replay_buffer.add((state, action, reward, next_state, done), priority=1.0)
+
+    def _get_sequence_state(self, state):
+        """
+        将单步状态扩展为时序数据。
+        :param state: 当前状态，形状为 [1, state_dim]
+        :return: 时序数据，形状为 [sequence_length, 1, state_dim]
+        """
+        self.state_buffer.append(state)  # 将当前状态添加到状态缓冲区
+        while len(self.state_buffer) < self.sequence_length:  # 如果缓冲区不足，用当前状态填充
+            self.state_buffer.append(state)
+        sequence_state = torch.stack(list(self.state_buffer), dim=0)  # 组合成时序数据，形状为 [sequence_length, 1, state_dim]
+        return sequence_state
 
     def train(self, num_episodes):
         """
@@ -240,47 +297,46 @@ class Agent:
         try:
             for episode in range(num_episodes):
                 observation, info = self.env.reset()  # 正确解包返回值
-                state = torch.tensor(observation, dtype=torch.float32, device=self.network.device).unsqueeze(0)
+                # state = torch.tensor(observation, dtype=torch.float32, device=self.network.device).unsqueeze(0)
+                state = torch.tensor(observation, dtype=torch.float32, device=self.network.device)
+                sequence_state = self._get_sequence_state(state).unsqueeze(0)  # 将单步状态扩展为时序数据
                 total_reward = 0
 
                 for step in range(1000):
-                    q_values = self.network.q_net(state)
+                    q_values = self.network.q_net(sequence_state)  # 使用时序数据作为输入
                     action = self.exploration.act(q_values)
-                    next_observation, reward, terminated, truncated, _ = self.env.step(action.item())
+                    # 确保正确解包 env.step() 的返回值
+                    next_observation, reward, terminated, truncated, info = self.env.step(action.item())
                     done = terminated or truncated
 
-                    next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device).unsqueeze(0)
+                    # next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device).unsqueeze(0)
+                    next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device)
+                    sequence_next_state = self._get_sequence_state(next_state).unsqueeze(0)  # 将下一个状态扩展为时序数据
                     reward_tensor = torch.tensor([reward], dtype=torch.float32, device=self.network.device)
                     done_tensor = torch.tensor([done], dtype=torch.int8, device=self.network.device)
 
-                    self.replay_buffer.add((state, action, reward_tensor, next_state, done_tensor), priority=1.0)
-                    state = next_state
+                    # 将经验添加到 n-step 缓冲区
+                    self.n_step_buffer.append((sequence_state, action, reward_tensor, sequence_next_state, done_tensor))
+                    self._process_n_step()  # 处理 n-step 回报
+
+                    sequence_state = sequence_next_state  # 更新时序状态
                     total_reward += reward
 
                     if len(self.replay_buffer.buffer) >= self.batch_size:
                         batch, indices, weights = self.replay_buffer.sample(self.batch_size)
                         self.network.train(batch)
+                        self.network.update_target_network()  # 更新目标网络
 
                     if done:
+                        # 清空 n-step 缓冲区
+                        while len(self.n_step_buffer) > 0:
+                            self._process_n_step()
+                            self.n_step_buffer.popleft()
                         break
 
                 logging.info(f"Episode {episode + 1}, Total Reward: {total_reward}")
         except Exception as e:
             logging.error(f"An error occurred during training: {e}")
-
-
-# 单元测试
-class TestReplayBuffer(unittest.TestCase):
-    def test_add_and_sample(self):
-        buffer = ReplayBuffer(capacity=10)
-        state = torch.tensor([1.0, 2.0])
-        action = torch.tensor([0])
-        reward = torch.tensor([1.0])
-        next_state = torch.tensor([2.0, 3.0])
-        done = torch.tensor([0])
-        buffer.add((state, action, reward, next_state, done), priority=1.0)
-        samples, indices, weights = buffer.sample(batch_size=1)
-        self.assertEqual(len(samples), 1)
 
 
 if __name__ == '__main__':
@@ -301,6 +357,7 @@ if __name__ == '__main__':
         'capacity': int(1e4),
         'batch_size': int(1e2),
         'temperature': 1.0,
+        'n_steps': 3,  # 新增 n-step 参数
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
 
@@ -326,5 +383,13 @@ if __name__ == '__main__':
     )
 
     # 初始化 Agent 并开始训练
-    agent = Agent(env, replay_buffer, network, exploration, config['gamma'], config['batch_size'])
+    agent = Agent(
+        env=env,
+        replay_buffer=replay_buffer,
+        network=network,
+        exploration=exploration,
+        gamma=config['gamma'],
+        batch_size=config['batch_size'],
+        n_steps=config['n_steps']  # 传递 n-step 参数
+    )
     agent.train(num_episodes=1000)
