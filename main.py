@@ -81,6 +81,81 @@ class ReplayBuffer:
             self.priorities[idx] = priority
 
 
+class DQNModel(nn.Module):
+    def __init__(self, input_size, d_model, num_layers, output_size):
+        """
+        初始化 DQN 模型。
+        :param input_size: 输入特征的维度
+        :param d_model: 隐藏层的维度，类似于 Transformer 中的隐藏层维度
+        :param num_layers: 隐藏层的数量
+        :param output_size: 输出动作的维度，对应 Q 值的数量
+        """
+        super(DQNModel, self).__init__()
+        # 输入嵌入层，将输入特征映射到 d_model 维度
+        self.embedding = nn.Linear(input_size, d_model)
+        # 构建隐藏层列表
+        hidden_layers = []
+        for _ in range(num_layers):
+            # 添加一个线性层
+            hidden_layers.append(nn.Linear(d_model, d_model))
+            # 添加 ReLU 激活函数，引入非线性
+            hidden_layers.append(nn.ReLU())
+        # 将隐藏层列表组合成一个顺序模块
+        self.hidden_layers = nn.Sequential(*hidden_layers)
+        # 输出层，将隐藏层的输出映射到 output_size 维度，得到每个动作的 Q 值
+        self.fc = nn.Linear(d_model, output_size)
+
+    def forward(self, x):
+        """
+        前向传播。
+        :param x: 输入状态，形状为 [batch_size, sequence_length, input_size]
+        :return: 输出每个动作的 Q 值，形状为 [batch_size, output_size]
+        """
+        # 对于序列输入，我们只取最后一个时间步的状态
+        x = x[:, -1, :]
+        # 通过嵌入层将输入特征维度转换为 d_model
+        x = self.embedding(x)
+        # 通过隐藏层进行特征提取和非线性变换
+        x = self.hidden_layers(x)
+        # 通过全连接层得到每个动作的 Q 值
+        x = self.fc(x)
+        return x
+
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_size, d_model, num_layers, output_size):
+        """
+        初始化 LSTM 模型。
+        :param input_size: 输入特征的维度
+        :param d_model: LSTM 隐藏层的维度，类似于 Transformer 中的隐藏层维度
+        :param num_layers: LSTM 的层数
+        :param output_size: 输出动作的维度
+        """
+        super(LSTMModel, self).__init__()
+        # 输入嵌入层，将输入特征映射到 d_model 维度
+        self.embedding = nn.Linear(input_size, d_model)
+        # 定义 LSTM 层，batch_first=True 表示输入输出的第一维是 batch_size
+        self.lstm = nn.LSTM(d_model, d_model, num_layers, batch_first=True)
+        # 输出层，将 LSTM 的输出映射到 output_size 维度
+        self.fc = nn.Linear(d_model, output_size)
+
+    def forward(self, x):
+        """
+        前向传播。
+        :param x: 输入状态，形状为 [batch_size, sequence_length, input_size]
+        :return: 输出动作值，形状为 [batch_size, output_size]
+        """
+        # 通过嵌入层将输入特征维度转换为 d_model
+        x = self.embedding(x)
+        # 将输入传入 LSTM 层，_ 表示忽略 LSTM 的隐藏状态和细胞状态
+        output, _ = self.lstm(x)
+        # 取最后一个时间步的输出，形状为 [batch_size, d_model]
+        x = output[:, -1, :]
+        # 通过全连接层将输出映射到 output_size 维度
+        x = self.fc(x)
+        return x
+
+
 class TransformerModel(nn.Module):
     def __init__(self, input_size, d_model, nhead, num_layers, output_size):
         """
@@ -113,28 +188,24 @@ class TransformerModel(nn.Module):
         return x
 
 
-class Network:
-    def __init__(self, input_size, d_model, nhead, num_layers, output_size, lr, tau, gamma, device='cpu'):
+class BaseNetwork:
+    def __init__(self, lr, tau, gamma, device='cpu', q_net: nn.Module = None, v_net: nn.Module = None):
         """
         初始化神经网络模块。
-        :param input_size: 输入状态的维度
-        :param d_model: Transformer 模型的隐藏层维度
-        :param nhead: 多头注意力机制的头数
-        :param num_layers: Transformer 编码器的层数
-        :param output_size: 输出动作的维度
         :param lr: 学习率
         :param tau: 目标网络更新系数
         :param gamma: 折扣因子
         :param device: 存储设备（'cpu' 或 'cuda'）
         """
-        self.device = device
+        self.lr = lr
+        self.tau = tau
         self.gamma = gamma  # 新增 gamma 参数
-        self.q_net = TransformerModel(input_size, d_model, nhead, num_layers, output_size).to(device)
-        self.v_net = TransformerModel(input_size, d_model, nhead, num_layers, output_size).to(device)
+        self.device = device
+        self.q_net = q_net
+        self.v_net = v_net
         self.v_net.load_state_dict(self.q_net.state_dict())  # 同步初始权重
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
         self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.9)
-        self.tau = tau
 
     def update_target_network(self):
         """
@@ -168,6 +239,27 @@ class Network:
         self.optimizer.step()  # 更新参数
 
         self.lr_scheduler.step()  # 更新学习率
+
+
+class DQNNetwork(BaseNetwork):
+    def __init__(self, input_size, d_model, num_layers, output_size, lr, tau, gamma, device='cpu'):
+        self.q_net = DQNModel(input_size, d_model, num_layers, output_size).to(device)
+        self.v_net = DQNModel(input_size, d_model, num_layers, output_size).to(device)
+        super().__init__(lr, tau, gamma, device, self.q_net, self.v_net)
+
+
+class LSTMNetwork(BaseNetwork):
+    def __init__(self, input_size, d_model, num_layers, output_size, lr, tau, gamma, device='cpu'):
+        self.q_net = LSTMModel(input_size, d_model, num_layers, output_size).to(device)
+        self.v_net = LSTMModel(input_size, d_model, num_layers, output_size).to(device)
+        super().__init__(lr, tau, gamma, device, self.q_net, self.v_net)
+
+
+class TransformerNetwork(BaseNetwork):
+    def __init__(self, input_size, d_model, nhead, num_layers, output_size, lr, tau, gamma, device='cpu'):
+        self.q_net = TransformerModel(input_size, d_model, nhead, num_layers, output_size).to(device)
+        self.v_net = TransformerModel(input_size, d_model, nhead, num_layers, output_size).to(device)
+        super().__init__(lr, tau, gamma, device, self.q_net, self.v_net)
 
 
 class Exploration:
@@ -286,6 +378,9 @@ class Agent:
                     next_observation, reward, terminated, truncated, info = self.env.step(action.item())
                     done = terminated or truncated
 
+                    # 2021-12-02 Shawn: redefine reward for better control target and convergence.
+                    reward = 1 - abs(state[0] / 2.4)
+
                     next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device)
                     sequence_next_state = self._get_sequence_state(next_state).unsqueeze(0)  # 将下一个状态扩展为时序数据，再扩展为批量状态
                     reward_tensor = torch.tensor([reward], dtype=torch.float32, device=self.network.device)
@@ -310,7 +405,7 @@ class Agent:
                             self.n_step_buffer.popleft()
                         break
 
-                logging.info(f"Episode {episode + 1}, Total Reward: {total_reward}")
+                logging.info(f"Episode {episode + 1}, Total Step: {step + 1}")
         except Exception as e:
             logging.error(f"An error occurred during training: {e}")
 
@@ -320,12 +415,12 @@ if __name__ == '__main__':
     env = gym.make('CartPole-v1', render_mode="human")
     config = {
         'input_size': env.observation_space.shape[0],
-        'd_model': 32,
+        'd_model': 16,
         'nhead': 4,
         'num_layers': 2,
         'output_size': env.action_space.n,
         'lr': 1e-2,
-        'tau': 0.005,
+        'tau': 1e-2,
         'gamma': 0.99,
         'epsi_high': 0.9,
         'epsi_low': 0.05,
@@ -334,13 +429,34 @@ if __name__ == '__main__':
         'batch_size': int(1e2),
         'temperature': 1.0,
         'n_steps': 3,  # 新增 n-step 参数
-        'sequence_length': 10,  # 新增 sequence-length 参数
+        'sequence_length': 5,  # 新增 sequence-length 参数
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
+    print(config)
 
     # 初始化模块
     replay_buffer = ReplayBuffer(capacity=config['capacity'], device=config['device'])
-    network = Network(
+    dqn_network = DQNNetwork(
+        input_size=config['input_size'],
+        d_model=config['d_model'],
+        num_layers=config['num_layers'],
+        output_size=config['output_size'],
+        lr=config['lr'],
+        tau=config['tau'],
+        gamma=config['gamma'],
+        device=config['device']
+    )
+    lstm_network = LSTMNetwork(
+        input_size=config['input_size'],
+        d_model=config['d_model'],
+        num_layers=config['num_layers'],
+        output_size=config['output_size'],
+        lr=config['lr'],
+        tau=config['tau'],
+        gamma=config['gamma'],
+        device=config['device']
+    )
+    transformer_network = TransformerNetwork(
         input_size=config['input_size'],
         d_model=config['d_model'],
         nhead=config['nhead'],
@@ -363,7 +479,9 @@ if __name__ == '__main__':
     agent = Agent(
         env=env,
         replay_buffer=replay_buffer,
-        network=network,
+        # network=dqn_network,
+        # network=lstm_network,
+        network=transformer_network,
         exploration=exploration,
         gamma=config['gamma'],
         batch_size=config['batch_size'],

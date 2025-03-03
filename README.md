@@ -3,17 +3,26 @@
 ## Env Setup
 
 ```
+C:/Users/Shawn/AppData/Local/Programs/Python/Python310/python.exe -m pip install --upgrade pip
+
 pip install -U autopep8
 
 C:/Users/Shawn/AppData/Local/Programs/Python/Python310/python.exe -m venv .env
 
-pip install numpy
-pip install matplotlib
-pip install torch torchvision torchaudio
+pip install matplotlib numpy pandas
+```
+
+```
+NVIDIA-smi
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 pip install gymnasium
 ```
 
 ## Lear RL by AI
+
+1. DQN
+2. LSTM
+3. Transform(Encoder)
 
 ## TODO
 
