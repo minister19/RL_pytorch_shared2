@@ -27,3 +27,4 @@ pip install gymnasium
 ## TODO
 
 1. n-step 回报的逻辑类似于我之前研究的，between-action-reward/cost. 用于降低 action 切换逻辑。
+2. 基于 td_errors 优化 ReplayBuffer.update_priorities。

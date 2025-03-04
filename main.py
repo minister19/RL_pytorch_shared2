@@ -246,7 +246,7 @@ class BaseNetwork:
         self.v_net = v_net
         self.v_net.load_state_dict(self.q_net.state_dict())  # 同步初始权重
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
-        self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.9)
+        self.lr_scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.99)
 
     def update_target_network(self):
         """
@@ -360,7 +360,7 @@ class Exploration:
 
 
 class Agent:
-    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer, network: BaseNetwork, exploration: Exploration, gamma, batch_size, n_steps=3, sequence_length=10):
+    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer, network: BaseNetwork, exploration: Exploration, gamma, batch_size, n_steps=3, sequence_length=10, update_priorities=False):
         """
         初始化 Agent。
         :param env: 环境对象
@@ -371,6 +371,7 @@ class Agent:
         :param batch_size: 训练批次大小
         :param n_steps: n-step 回报的步数
         :param sequence_length: 时序数据的长度
+        :param update_priorities: 是否更新经验优先级
         """
         self.env = env
         self.replay_buffer = replay_buffer
@@ -379,7 +380,8 @@ class Agent:
         self.gamma = gamma
         self.batch_size = batch_size
         self.n_steps = n_steps
-        self.sequence_length = sequence_length  # 时序数据的长度
+        self.sequence_length = sequence_length
+        self.update_priorities = update_priorities
         self.n_step_buffer = deque(maxlen=n_steps)  # 初始化 n-step 缓冲区
         self.state_buffer = deque(maxlen=sequence_length)  # 初始化状态缓冲区
 
@@ -429,9 +431,6 @@ class Agent:
                     next_observation, reward, terminated, truncated, info = self.env.step(action.item())
                     done = terminated or truncated
 
-                    # 2021-12-02 Shawn: redefine reward for better control target and convergence.
-                    reward = 1 - abs(state[0].item() / 2.4)
-
                     next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device)
                     sequence_next_state = self._get_sequence_state(next_state).unsqueeze(0)  # 将下一个状态扩展为时序数据，再扩展为批量状态
                     reward_tensor = torch.tensor([reward], dtype=torch.float32, device=self.network.device)
@@ -448,7 +447,8 @@ class Agent:
                         batch, indices, weights = self.replay_buffer.sample(self.batch_size)
                         td_errors = self.network.train(batch)
                         self.network.update_target_network()  # 更新目标网络
-                        self.replay_buffer.update_priorities(indices, td_errors)  # 更新优先级
+                        if self.update_priorities:
+                            self.replay_buffer.update_priorities(indices, td_errors)  # 更新优先级
 
                     if done:
                         # 清空 n-step 缓冲区
@@ -457,12 +457,22 @@ class Agent:
                             self.n_step_buffer.popleft()
                         break
 
-                logging.info(f"Episode {episode + 1}, Total Step and Reward: {step+1} {round(total_reward, 1)}")
+                logging.info(f"Episode {episode + 1}, Total Reward: {total_reward}")
         except Exception as e:
             logging.error(f"An error occurred during training: {e}")
 
 
 if __name__ == '__main__':
+    '''
+    训练方式
+    1. 如果要查看环境实时渲染，打开render_mode。
+
+    训练经验
+    1. 选DQN时，n_steps=1, sequence_length=1，关闭 update_priorities。
+    2. 选CNN时，暂时不知道该咋整。
+    3. 选LSTM时，n_steps=3, sequence_length=5，关闭 update_priorities。
+    4. 选Transformer时，n_steps=3, sequence_length=5，关闭 update_priorities。
+    '''
     # 初始化环境和超参数
     # env = gym.make('CartPole-v1', render_mode="human")
     env = gym.make('CartPole-v1')
@@ -485,6 +495,7 @@ if __name__ == '__main__':
         'temperature': 1.0,
         'n_steps': 3,  # 新增 n-step 参数
         'sequence_length': 5,  # 新增 sequence-length 参数
+        'update_priorities': False,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
     print(config)
@@ -545,14 +556,15 @@ if __name__ == '__main__':
     agent = Agent(
         env=env,
         replay_buffer=replay_buffer,
-        network=dqn_network,
+        # network=dqn_network,
         # network=cnn_network,
         # network=lstm_network,
-        # network=transformer_network,
+        network=transformer_network,
         exploration=exploration,
         gamma=config['gamma'],
         batch_size=config['batch_size'],
         n_steps=config['n_steps'],  # 传递 n-step 参数
         sequence_length=config['sequence_length'],  # 传递 sequence-length 参数
+        update_priorities=config['update_priorities'],  # 传递 update-priorities 参数
     )
     agent.train(num_episodes=1000)
