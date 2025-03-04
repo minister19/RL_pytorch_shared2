@@ -1,12 +1,12 @@
 import logging
 import math
 import random
-import gymnasium as gym
 from collections import deque
-import torch.optim as optim
-import torch.nn as nn
-import torch
+import gymnasium as gym
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
 
 # 配置日志记录
@@ -118,6 +118,47 @@ class DQNModel(nn.Module):
         # 通过隐藏层进行特征提取和非线性变换
         x = self.hidden_layers(x)
         # 通过全连接层得到每个动作的 Q 值
+        x = self.fc(x)
+        return x
+
+
+class CNNModel(nn.Module):
+    def __init__(self, input_size, d_model, num_filters, kernel_size, output_size):
+        """
+        初始化 CNN 模型。
+        :param input_size: 输入特征的维度
+        :param d_model: 卷积层输出通道数，类似于 LSTM 中的隐藏层维度
+        :param num_filters: 卷积核的数量
+        :param kernel_size: 卷积核的大小
+        :param output_size: 输出动作的维度
+        """
+        super(CNNModel, self).__init__()
+        # 输入嵌入层，将输入特征映射到 d_model 维度
+        self.embedding = nn.Linear(input_size, d_model)
+        # 定义卷积层
+        self.conv1d = nn.Conv1d(in_channels=d_model, out_channels=num_filters, kernel_size=kernel_size)
+        # 全局最大池化层
+        self.global_max_pool = nn.AdaptiveMaxPool1d(1)
+        # 输出层，将卷积层的输出映射到 output_size 维度
+        self.fc = nn.Linear(num_filters, output_size)
+
+    def forward(self, x):
+        """
+        前向传播。
+        :param x: 输入状态，形状为 [batch_size, sequence_length, input_size]
+        :return: 输出动作值，形状为 [batch_size, output_size]
+        """
+        # 通过嵌入层将输入特征维度转换为 d_model
+        x = self.embedding(x)
+        # 调整输入的维度以适应卷积层的输入要求 [batch_size, in_channels, sequence_length]
+        x = x.permute(0, 2, 1)
+        # 将输入传入卷积层
+        x = self.conv1d(x)
+        # 应用全局最大池化层
+        x = self.global_max_pool(x)
+        # 调整维度以适应全连接层的输入要求 [batch_size, num_filters]
+        x = x.squeeze(-1)
+        # 通过全连接层将输出映射到 output_size 维度
         x = self.fc(x)
         return x
 
@@ -248,6 +289,13 @@ class DQNNetwork(BaseNetwork):
     def __init__(self, input_size, d_model, num_layers, output_size, lr, tau, gamma, device='cpu'):
         self.q_net = DQNModel(input_size, d_model, num_layers, output_size).to(device)
         self.v_net = DQNModel(input_size, d_model, num_layers, output_size).to(device)
+        super().__init__(lr, tau, gamma, device, self.q_net, self.v_net)
+
+
+class CNNNetwork(BaseNetwork):
+    def __init__(self, input_size, d_model, num_filters, kernel_size, output_size, lr, tau, gamma, device='cpu'):
+        self.q_net = CNNModel(input_size, d_model, num_filters, kernel_size, output_size).to(device)
+        self.v_net = CNNModel(input_size, d_model, num_filters, kernel_size, output_size).to(device)
         super().__init__(lr, tau, gamma, device, self.q_net, self.v_net)
 
 
@@ -421,8 +469,10 @@ if __name__ == '__main__':
     config = {
         'input_size': env.observation_space.shape[0],
         'd_model': 16,
-        'nhead': 4,
+        'num_filters': 8,   # 卷积核数量
+        'kernel_size': 3,   # 卷积核大小
         'num_layers': 2,
+        'nhead': 4,
         'output_size': env.action_space.n,
         'lr': 1e-2,
         'tau': 1e-2,
@@ -445,6 +495,17 @@ if __name__ == '__main__':
         input_size=config['input_size'],
         d_model=config['d_model'],
         num_layers=config['num_layers'],
+        output_size=config['output_size'],
+        lr=config['lr'],
+        tau=config['tau'],
+        gamma=config['gamma'],
+        device=config['device']
+    )
+    cnn_network = CNNNetwork(
+        input_size=config['input_size'],
+        d_model=config['d_model'],
+        num_filters=config['num_filters'],
+        kernel_size=config['kernel_size'],
         output_size=config['output_size'],
         lr=config['lr'],
         tau=config['tau'],
@@ -484,9 +545,10 @@ if __name__ == '__main__':
     agent = Agent(
         env=env,
         replay_buffer=replay_buffer,
-        # network=dqn_network,
+        network=dqn_network,
+        # network=cnn_network,
         # network=lstm_network,
-        network=transformer_network,
+        # network=transformer_network,
         exploration=exploration,
         gamma=config['gamma'],
         batch_size=config['batch_size'],
