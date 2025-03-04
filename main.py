@@ -240,6 +240,9 @@ class BaseNetwork:
 
         self.lr_scheduler.step()  # 更新学习率
 
+        td_errors = torch.abs(q_values - target_q_values).squeeze().cpu().detach().numpy()  # 计算 TD 误差作为新的优先级
+        return td_errors
+
 
 class DQNNetwork(BaseNetwork):
     def __init__(self, input_size, d_model, num_layers, output_size, lr, tau, gamma, device='cpu'):
@@ -309,7 +312,7 @@ class Exploration:
 
 
 class Agent:
-    def __init__(self, env, replay_buffer, network, exploration, gamma, batch_size, n_steps=3, sequence_length=10):
+    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer, network: BaseNetwork, exploration: Exploration, gamma, batch_size, n_steps=3, sequence_length=10):
         """
         初始化 Agent。
         :param env: 环境对象
@@ -395,8 +398,9 @@ class Agent:
 
                     if len(self.replay_buffer.buffer) >= self.batch_size:
                         batch, indices, weights = self.replay_buffer.sample(self.batch_size)
-                        self.network.train(batch)
+                        td_errors = self.network.train(batch)
                         self.network.update_target_network()  # 更新目标网络
+                        self.replay_buffer.update_priorities(indices, td_errors)  # 更新优先级
 
                     if done:
                         # 清空 n-step 缓冲区
