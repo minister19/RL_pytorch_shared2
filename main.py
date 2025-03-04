@@ -379,7 +379,7 @@ class Agent:
                     done = terminated or truncated
 
                     # 2021-12-02 Shawn: redefine reward for better control target and convergence.
-                    reward = 1 - abs(state[0] / 2.4)
+                    reward = 1 - abs(state[0].item() / 2.4)
 
                     next_state = torch.tensor(next_observation, dtype=torch.float32, device=self.network.device)
                     sequence_next_state = self._get_sequence_state(next_state).unsqueeze(0)  # 将下一个状态扩展为时序数据，再扩展为批量状态
@@ -405,14 +405,15 @@ class Agent:
                             self.n_step_buffer.popleft()
                         break
 
-                logging.info(f"Episode {episode + 1}, Total Step: {step + 1}")
+                logging.info(f"Episode {episode + 1}, Total Step and Reward: {step+1} {round(total_reward, 1)}")
         except Exception as e:
             logging.error(f"An error occurred during training: {e}")
 
 
 if __name__ == '__main__':
     # 初始化环境和超参数
-    env = gym.make('CartPole-v1', render_mode="human")
+    # env = gym.make('CartPole-v1', render_mode="human")
+    env = gym.make('CartPole-v1')
     config = {
         'input_size': env.observation_space.shape[0],
         'd_model': 16,
