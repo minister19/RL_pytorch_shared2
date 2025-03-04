@@ -210,7 +210,7 @@ class TransformerModel(nn.Module):
         super(TransformerModel, self).__init__()
         self.embedding = nn.Linear(input_size, d_model)  # 输入嵌入层
         self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, nhead, norm_first=True),  # 层归一化在前
+            nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, norm_first=True),  # 层归一化在前
             num_layers
         )
         self.fc = nn.Linear(d_model, output_size)  # 输出层
@@ -222,9 +222,8 @@ class TransformerModel(nn.Module):
         :return: 输出动作值，形状为 [batch_size, output_size]
         """
         x = self.embedding(x)  # 嵌入输入
-        x = x.permute(1, 0, 2)  # 调整维度以适应 Transformer 的输入形状 [sequence_length, batch_size, d_model]
         x = self.transformer_encoder(x)  # 通过 Transformer 编码器
-        x = x[-1, :, :]  # 取最后一个时间步的输出 [batch_size, d_model]
+        x = x[:, -1, :]  # 取最后一个时间步的输出 [batch_size, d_model]
         x = self.fc(x)  # 进行全连接层处理
         return x
 
