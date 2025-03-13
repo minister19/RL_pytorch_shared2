@@ -359,7 +359,7 @@ class Exploration:
 
 
 class Agent:
-    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer, network: BaseNetwork, exploration: Exploration, gamma, batch_size, n_steps=3, sequence_length=10, update_priorities=False):
+    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer, network: BaseNetwork, exploration: Exploration, gamma, batch_size, n_steps=3, sequence_length=10, update_priorities=False, **kwargs):
         """
         初始化 Agent。
         :param env: 环境对象
@@ -500,7 +500,13 @@ if __name__ == '__main__':
     print(config)
 
     # 初始化模块
-    replay_buffer = ReplayBuffer(capacity=config['capacity'], device=config['device'])
+    replay_buffer = ReplayBuffer(
+        capacity=config['capacity'],
+        alpha=0.6,
+        beta=0.4,
+        beta_increment_per_sampling=1.0 / 1000,
+        device=config['device']
+    )
     dqn_network = DQNNetwork(
         input_size=config['input_size'],
         d_model=config['d_model'],
